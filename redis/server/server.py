@@ -1,13 +1,15 @@
 import asyncio
 import functools
+import types
 
 from redis.common.proto import RedisProtocol, ProtocolError
-from redis.common.exceptions import CommandNotFoundError, CommandError
+from redis.common.exceptions import CommandNotFoundError, CommandError, ClientQuitError
+from redis.common.utils import close_connection, abort
 
 
 class RedisServerMixin(object):
 
-    def command(self, cmd):
+    def command(self, cmd, nargs=None):
         if not hasattr(self, 'handlers'):
             self.handlers = dict()
         if not isinstance(cmd, bytes):
@@ -16,6 +18,15 @@ class RedisServerMixin(object):
         def wrapper(func):
             @functools.wraps(func)
             def __wrapper(raw_argv):
+
+                if nargs is not None:
+                    if isinstance(nargs, int):
+                        if len(raw_argv) - 1 != nargs:
+                            abort(message="wrong number of arguments for '%s' command" % cmd.decode())
+                    elif isinstance(nargs, types.FunctionType):
+                        if not nargs(len(raw_argv) - 1):
+                            abort(message="wrong number of arguments for '%s' command" % cmd.decode())
+
                 return func(raw_argv)
             self.handlers[cmd.lower()] = __wrapper
             return __wrapper
@@ -87,6 +98,11 @@ class RedisClient(object):
             except CommandError as e:
                 errtype, message = e.args
                 self.write_error(errtype=errtype, message=message)
+            except ClientQuitError as e:
+                self.write_simple_string('OK')
+                self.stream_writer.transport.close()
+                break
+
         print('Client closed')
 
     def write_error(self, errtype, message):

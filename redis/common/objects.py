@@ -33,7 +33,11 @@ class RedisObject:
 
 class RedisStringObject(RedisObject):
 
-    def __init__(self, value='', expire_time=None):
+    def __init__(self, value=b'', expire_time=None):
+        if isinstance(value, str):
+            value = value.encode()
+        elif not isinstance(value, bytes):
+            value = str(value).encode()
         super(RedisStringObject, self).__init__(value, expire_time)
 
     def __str__(self):

@@ -1,0 +1,10 @@
+*~
+.DS_Store
+*.swp
+*.o
+
+__pycache__
+*.sublime-*
+*.egg-info
+dist
+build

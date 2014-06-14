@@ -8,3 +8,9 @@ class CommandNotFoundError(Exception):
 
     def __init__(self, *args, **kwargs):
         super(CommandNotFoundError, self).__init__(*args, **kwargs)
+
+
+class ClientQuitError(Exception):
+
+    def __init__(self, *args, **kwargs):
+        super(ClientQuitError, self).__init__(*args, **kwargs)

@@ -129,5 +129,5 @@ class InlineProtocolParser(RedisProtocolParser):
 
     @asyncio.coroutine
     def get_argvalue(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
+        line = beginline.rstrip(b'\r\n').rstrip(b' ')
         return line.split(b' ')
