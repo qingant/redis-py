@@ -785,3 +785,27 @@ def incrbyfloat_handler(argv):
     obj.value = value
     key_space[key] = obj
     return str(value).encode()
+
+
+@server.command('strlen', nargs=1)
+def strlen_handler(argv):
+    '''
+    Returns the length of the string value stored at key. An error is returned when key holds a non-string value.
+
+    .. code::
+        STRLEN key
+
+    :return: the length of the string at key, or 0 when key does not exist.
+    :rtype: int
+
+    '''
+
+    key = argv[1]
+
+    if key not in key_space:
+        return 0
+
+    if not isinstance(key_space[key], RedisStringObject):
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    return len(key_space[key].get_bytes())

@@ -55,6 +55,8 @@ class RedisStringObject(RedisObject):
         return self.value
 
     def get_integer(self):
+        if isinstance(self.value, Decimal):
+            raise ValueError('Value is a Decimal')
         return int(self.value)
 
     def get_decimal(self):
