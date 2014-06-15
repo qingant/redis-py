@@ -39,15 +39,13 @@ class RedisServerMixin(object):
 
         return self.handlers[cmd](argv)
 
-current_server = None
-
 
 class RedisServer(RedisServerMixin):
 
     def __init__(self, *args, **kwargs):
         super(RedisServer, self).__init__(*args, **kwargs)
-        global current_server
-        current_server = self
+        import redis.server
+        redis.server.current_server = self
 
     @asyncio.coroutine
     def client_connected_cb(self, stream_reader, stream_writer):
@@ -122,7 +120,7 @@ class RedisClient(object):
 
     def serialize_to_resp(self, obj):
         if isinstance(obj, list):
-            resp = [b'*' + len(obj) + b'\r\n']
+            resp = [b'*' + str(len(obj)).encode() + b'\r\n']
             for o in obj:
                 resp.append(self.serialize_to_resp(o))
             return b''.join(resp)

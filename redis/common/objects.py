@@ -77,10 +77,34 @@ class RedisListObject(RedisObject):
     def __init__(self, value=[], expire_time=None):
         if isinstance(value, types.GeneratorType):
             value = list(value)
-        super(RedisStringObject, self).__init__(value, expire_time)
+        super(RedisListObject, self).__init__(value, expire_time)
 
-    def push(self, value):
-        self.value.append(value)
+    def push(self, *value):
+        for val in value:
+            self.value.insert(0, val)
+
+    def pop(self, index=0):
+        return self.value.pop(index)
+
+    def insert(self, index, value):
+        if index >= len(self.value) or index < 0:
+            raise IndexError('Out of range')
+        return self.value.insert(index, value)
 
     def __len__(self):
         return len(self.value)
+
+    def __getitem__(self, index):
+        return self.value[index]
+
+    def __setitem__(self, index, value):
+        self.value[index] = value
+
+    def reverse(self):
+        return self.value.reverse()
+
+    def remove(self, value):
+        self.value.remove(value)
+
+    def index(self, value):
+        return self.value.index(value)

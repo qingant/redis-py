@@ -1,6 +1,6 @@
 
-from .server import current_server as server
-from .storage import key_space
+from redis.server import current_server as server
+from redis.server.storage import key_space
 from redis.common.objects import RedisStringObject
 from redis.common.utils import abort, close_connection
 from redis.common.utils import nargs_greater_equal
