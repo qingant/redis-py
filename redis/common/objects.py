@@ -1,6 +1,7 @@
 
 import time
 from decimal import Decimal
+import types
 
 
 class RedisObject:
@@ -49,6 +50,9 @@ class RedisStringObject(RedisObject):
         else:
             return str(self.value)
 
+    def __len__(self):
+        return len(self.get_bytes())
+
     def get_bytes(self):
         if not isinstance(self.value, bytes):
             return str(self.value).encode()
@@ -66,3 +70,17 @@ class RedisStringObject(RedisObject):
 
     def get_float(self):
         return float(self.value)
+
+
+class RedisListObject(RedisObject):
+
+    def __init__(self, value=[], expire_time=None):
+        if isinstance(value, types.GeneratorType):
+            value = list(value)
+        super(RedisStringObject, self).__init__(value, expire_time)
+
+    def push(self, value):
+        self.value.append(value)
+
+    def __len__(self):
+        return len(self.value)

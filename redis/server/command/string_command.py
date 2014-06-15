@@ -809,3 +809,39 @@ def strlen_handler(argv):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return len(key_space[key].get_bytes())
+
+
+@server.command('append', nargs=2)
+def append_handler(argv):
+    '''
+    If key already exists and is a string, this command appends the value at the end of the string.
+    If key does not exist it is created and set as an empty string, so APPEND will be similar to SET
+    in this special case.
+
+    .. code::
+        APPEND key value
+
+    :return: the length of the string after the append operation.
+    :rtype: int
+
+    '''
+
+    key, value = argv[1], argv[2]
+
+    if key not in key_space:
+        length = len(value)
+        try:
+            value = int(value)
+        except ValueError:
+            pass
+        key_space[key] = RedisStringObject(value)
+
+        return length
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+        obj = key_space[key]
+        obj.value = obj.get_bytes() + value
+
+        return len(obj.value)
