@@ -1,10 +1,9 @@
 '''
-Neinei App API Server. https://bitbucket.org/neineiappgroup/neineiapp-apiserver
+Redis Server in Python
+~~~~~~~~~~~~~~~~~~~~~~
 
-Neinei App API Server
-~~~~~~~~~~~~~~~~~~~~~
-
-API Server for serving data to clients.
+:copyright: Y. T. Chung
+:license: None
 
 '''
 

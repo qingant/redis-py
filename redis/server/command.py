@@ -5,6 +5,8 @@ from redis.common.objects import RedisStringObject
 from redis.common.utils import abort, close_connection
 from redis.common.utils import nargs_greater_equal
 import time
+import bitarray
+from decimal import InvalidOperation, Decimal
 
 
 @server.command('quit', nargs=0)
@@ -60,7 +62,7 @@ def bitcount_handler(argv):
         end += 1
 
     ba = bitarray.bitarray()
-    ba.frombytes(obj.value[start:end])
+    ba.frombytes(obj.get_bytes()[start:end])
     return ba.count()
 
 
@@ -107,8 +109,8 @@ def bitop_handler(argv):
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
         ba = bitarray.bitarray()
-        ba.frombytes(key_space[keys[0]].value)
-        ba = ~ba
+        ba.frombytes(key_space[keys[0]].get_bytes())
+        ba.invert()
         key_space[destkey] = RedisStringObject(ba.tobytes())
         return len(key_space[destkey].value)
 
@@ -123,7 +125,7 @@ def bitop_handler(argv):
     if keys[0] in key_space:
         if not isinstance(key_space[keys[0]], RedisStringObject):
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        dest_ba.frombytes(key_space[keys[0]].value)
+        dest_ba.frombytes(key_space[keys[0]].get_bytes())
 
     for key in keys[1:]:
         if key not in key_space:
@@ -132,7 +134,7 @@ def bitop_handler(argv):
             if not isinstance(key_space[key], RedisStringObject):
                 abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
             src_ba = bitarray.bitarray()
-            src_ba.frombytes(key_space[key].value)
+            src_ba.frombytes(key_space[key].get_bytes())
 
             if len(src_ba) > len(dest_ba):
                 dest_ba.extend([0] * (len(src_ba) - len(dest_ba)))
@@ -142,11 +144,11 @@ def bitop_handler(argv):
         dest_ba = oper_func(dest_ba, src_ba)
 
     key_space[destkey] = RedisStringObject(dest_ba.tobytes())
-    return len(key_space[destkey].value)
+    return len(key_space[destkey].get_bytes())
 
 
-@server.command('bitops', nargs=nargs_greater_equal(2))
-def bitops_handler(argv):
+@server.command('bitpos', nargs=nargs_greater_equal(2))
+def bitpos_handler(argv):
     '''
     Return the position of the first bit set to 1 or 0 in a string.
 
@@ -191,6 +193,55 @@ def bitops_handler(argv):
     :rtype: int
 
     '''
+
+    key, bit = argv[1], argv[2]
+    try:
+        bit = int(bit)
+        if bit not in (0, 1):
+            abort(message='The bit argument must be 1 or 0.')
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
+    if len(argv) > 5:
+        abort(message='syntax error')
+    try:
+        start = int(argv[3])
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+    except IndexError:
+        start = None
+
+    try:
+        end = int(argv[4])
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+    except IndexError:
+        end = None
+
+    begin_pos = 0
+    if key not in key_space:
+        ba = bitarray.bitarray(b'0')
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        ba = bitarray.bitarray()
+        if start is not None:
+            if start < 0:
+                start = len(key_space[key].get_bytes()) + start
+            begin_pos = start * 8
+
+        if end is not None:
+            if end < 0:
+                end = len(key_space[key].get_bytes()) + end
+            end += 1
+
+        ba.frombytes(key_space[key].get_bytes()[start:end])
+
+    pos = ba.search(bitarray.bitarray(str(bit)), 1)
+    if len(pos) == 0:
+        return -1
+    else:
+        return pos[0] + begin_pos
 
 
 @server.command('set', nargs=nargs_greater_equal(2))
@@ -252,6 +303,10 @@ def set_handler(argv):
     if xx and key not in key_space:
         return None
 
+    try:
+        value = int(value)
+    except ValueError:
+        pass
     key_space[key] = RedisStringObject(value, expire_time=expire_time)
     return True
 
@@ -287,7 +342,7 @@ def setbit_handler(argv):
     if key in key_space:
         if not isinstance(key_space[key], RedisStringObject):
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        ba.frombytes(key_space[key].value)
+        ba.frombytes(key_space[key].get_bytes())
     else:
         key_space[key] = RedisStringObject()
 
@@ -375,13 +430,15 @@ def setrange_handler(argv):
         if not isinstance(obj, RedisStringObject):
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    if len(obj.value) < offset:
-        obj.value += bytes(offset - len(obj.value)) + value
+    stor_value = obj.get_bytes()
+    if len(stor_value) < offset:
+        stor_value += bytes(offset - len(stor_value)) + value
     else:
-        obj.value = obj.value[0:offset + 1] + value
+        stor_value = stor_value[0:offset + 1] + value
 
+    obj.value = stor_value
     key_space[key] = obj
-    return len(obj.value)
+    return len(stor_value)
 
 
 @server.command('get', nargs=1)
@@ -405,10 +462,7 @@ def get_handler(argv):
 
     if not isinstance(key_space[key], RedisStringObject):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-    return key_space[key].value
-
-
-import bitarray
+    return key_space[key].get_bytes()
 
 
 @server.command('getbit', nargs=2)
@@ -439,7 +493,7 @@ def getbit_handler(argv):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     ba = bitarray.bitarray()
-    ba.frombytes(key_space[key].value)
+    ba.frombytes(key_space[key].get_bytes())
 
     try:
         return int(ba[offset])
@@ -471,14 +525,17 @@ def getrange_handler(argv):
         abort(message='value is not an integer or out of range')
 
     if key not in key_space:
-        return ""
+        return b""
 
     if not isinstance(key_space[key], RedisStringObject):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    if end == -1:
-        end = len(key_space[key].value)
-    return key_space[key].value[start:end + 1]
+    val = key_space[key].get_bytes()
+    if start < 0:
+        start = len(val) + start
+    if end < 0:
+        end = len(val) + end
+    return val[start:end + 1]
 
 
 @server.command('getset', nargs=2)
@@ -497,11 +554,234 @@ def getset_handler(argv):
     if key in key_space and not isinstance(key_space[key], RedisStringObject):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
+    try:
+        value = int(value)
+    except ValueError:
+        pass
+
     if key in key_space:
-        orig_value = key_space[key].value
+        orig_value = key_space[key].get_bytes()
         key_space[key].value = value
     else:
         orig_value = None
         key_space[key] = RedisStringObject(value)
 
     return orig_value
+
+
+@server.command('decr', nargs=1)
+def decr_handler(argv):
+    '''
+    Decrements the number stored at key by one. If the key does not exist, it is set to 0 before
+    performing the operation. An error is returned if the key contains a value of the wrong type
+    or contains a string that can not be represented as integer. This operation is limited to 64
+    bit signed integers.
+
+    See INCR for extra information on increment/decrement operations.
+
+    .. code::
+        DECR key
+
+    :return: the value of key after the decrement
+    :rtype: int
+
+    '''
+    key = argv[1]
+
+    if key not in key_space:
+        value = 0
+        obj = RedisStringObject()
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = key_space[key]
+            value = obj.get_integer()
+        except ValueError:
+            abort(message='value is not an integer or out of range')
+    value -= 1
+
+    obj.value = value
+    key_space[key] = obj
+    return value
+
+
+@server.command('decrby', nargs=2)
+def decrby_handler(argv):
+    '''
+    Decrements the number stored at key by decrement. If the key does not exist, it is set to 0
+    before performing the operation. An error is returned if the key contains a value of the wrong
+    type or contains a string that can not be represented as integer. This operation is limited to
+    64 bit signed integers.
+
+    See INCR for extra information on increment/decrement operations.
+
+    .. code::
+        DECRBY key decrement
+
+    :return: the value of key after the decrement
+    :rtype: int
+
+    '''
+
+    key, decrement = argv[1], argv[2]
+
+    try:
+        decrement = int(decrement)
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
+    if key not in key_space:
+        value = 0
+        obj = RedisStringObject()
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = key_space[key]
+            value = obj.get_integer()
+        except ValueError:
+            abort(message='value is not an integer or out of range')
+    value -= decrement
+
+    obj.value = value
+    key_space[key] = obj
+    return value
+
+
+@server.command('incr', nargs=1)
+def incr_handler(argv):
+    '''
+    Increments the number stored at key by one. If the key does not exist, it is set to 0 before
+    performing the operation. An error is returned if the key contains a value of the wrong type or
+    contains a string that can not be represented as integer. This operation is limited to 64 bit
+    signed integers.
+
+    Note: this is a string operation because Redis does not have a dedicated integer type. The string
+    stored at the key is interpreted as a base-10 64 bit signed integer to execute the operation.
+
+    Redis stores integers in their integer representation, so for string values that actually hold an
+    integer, there is no overhead for storing the string representation of the integer.
+
+    .. code::
+        INCR key
+
+    :return: the value of key after the increment
+    :rtype: int
+
+    '''
+    key = argv[1]
+
+    if key not in key_space:
+        value = 0
+        obj = RedisStringObject()
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = key_space[key]
+            value = obj.get_integer()
+        except ValueError:
+            abort(message='value is not an integer or out of range')
+    value += 1
+
+    obj.value = value
+    key_space[key] = obj
+    return value
+
+
+@server.command('incrby', nargs=2)
+def incrby_handler(argv):
+    '''
+    Increments the number stored at key by increment. If the key does not exist, it is set to 0 before
+    performing the operation. An error is returned if the key contains a value of the wrong type or
+    contains a string that can not be represented as integer. This operation is limited to 64 bit signed
+    integers.
+
+    See INCR for extra information on increment/decrement operations.
+
+    .. code::
+        INCRBY key increment
+
+    :return: the value of key after the increment
+    :rtype: int
+    '''
+
+    key, increment = argv[1], argv[2]
+
+    try:
+        increment = int(increment)
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
+    if key not in key_space:
+        value = 0
+        obj = RedisStringObject(0)
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = key_space[key]
+            value = obj.get_integer()
+        except ValueError:
+            abort(message='value is not an integer or out of range')
+    value += increment
+
+    obj.value = value
+    key_space[key] = obj
+    return value
+
+
+@server.command('incrbyfloat', nargs=2)
+def incrbyfloat_handler(argv):
+    '''
+    Increment the string representing a floating point number stored at key by the specified increment.
+    If the key does not exist, it is set to 0 before performing the operation. An error is returned if
+    one of the following conditions occur:
+
+    * The key contains a value of the wrong type (not a string).
+    * The current key content or the specified increment are not parsable as a double precision floating
+      point number.
+
+    If the command is successful the new incremented value is stored as the new value of the key (replacing
+    the old one), and returned to the caller as a string.
+
+    Both the value already contained in the string key and the increment argument can be optionally provided
+    in exponential notation, however the value computed after the increment is stored consistently in the
+    same format, that is, an integer number followed (if needed) by a dot, and a variable number of digits
+    representing the decimal part of the number. Trailing zeroes are always removed.
+
+    The precision of the output is fixed at 17 digits after the decimal point regardless of the actual internal
+    precision of the computation.
+
+    .. code::
+        INCRBYFLOAT key increment
+
+    :return: the value of key after the increment.
+    :rtype: bytes
+
+    '''
+
+    key, increment = argv[1], argv[2]
+
+    try:
+        increment = Decimal(increment.decode())
+    except InvalidOperation:
+        abort(message='value is not a valid float')
+
+    if key not in key_space:
+        value = Decimal('0')
+        obj = RedisStringObject(value)
+    else:
+        if not isinstance(key_space[key], RedisStringObject):
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = key_space[key]
+            value = obj.get_decimal()
+        except InvalidOperation:
+            abort(message='value is not a valid float')
+    value += increment
+
+    obj.value = value
+    key_space[key] = obj
+    return str(value).encode()

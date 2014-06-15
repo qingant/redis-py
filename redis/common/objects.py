@@ -1,5 +1,6 @@
 
 import time
+from decimal import Decimal
 
 
 class RedisObject:
@@ -47,3 +48,19 @@ class RedisStringObject(RedisObject):
             return self.value.decode()
         else:
             return str(self.value)
+
+    def get_bytes(self):
+        if not isinstance(self.value, bytes):
+            return str(self.value).encode()
+        return self.value
+
+    def get_integer(self):
+        return int(self.value)
+
+    def get_decimal(self):
+        if isinstance(self.value, bytes):
+            return Decimal(self.value.decode())
+        return Decimal(str(self.value))
+
+    def get_float(self):
+        return float(self.value)
