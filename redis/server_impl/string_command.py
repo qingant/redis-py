@@ -9,16 +9,6 @@ import bitarray
 from decimal import InvalidOperation, Decimal
 
 
-@server.command('quit', nargs=0)
-def quit_handler(client, argv):
-    '''
-    Client request to close connection.
-
-
-    '''
-    close_connection()
-
-
 @server.command('bitcount', nargs=nargs_greater_equal(1))
 def bitcount_handler(client, argv):
     '''
@@ -465,7 +455,7 @@ def get_handler(client, argv):
     key = argv[1]
     try:
         obj = get_object(client.db, key, RedisStringObject)
-        return obj.get_bytes()
+        return obj
     except KeyError:
         return None
     except ValueError:
@@ -537,12 +527,12 @@ def getrange_handler(client, argv):
     except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    val = obj.get_bytes()
+    length = len(obj)
     if start < 0:
-        start = len(val) + start
+        start = length + start
     if end < 0:
-        end = len(val) + end
-    return val[start:end + 1]
+        end = length + end
+    return obj.get_range(start, end)
 
 
 @server.command('getset', nargs=2)
@@ -574,7 +564,7 @@ def getset_handler(client, argv):
     except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    return orig_value
+    return RedisStringObject(orig_value)
 
 
 @server.command('decr', nargs=1)
@@ -614,7 +604,7 @@ def decr_handler(client, argv):
 
     obj.value = value
     # client.db.key_space[key] = obj
-    return value
+    return obj
 
 
 @server.command('decrby', nargs=2)
@@ -660,7 +650,7 @@ def decrby_handler(client, argv):
 
     obj.value = value
     # client.db.key_space[key] = obj
-    return value
+    return obj
 
 
 @server.command('incr', nargs=1)
@@ -704,7 +694,7 @@ def incr_handler(client, argv):
 
     obj.value = value
     client.db.key_space[key] = obj
-    return value
+    return obj
 
 
 @server.command('incrby', nargs=2)
@@ -749,7 +739,7 @@ def incrby_handler(client, argv):
 
     obj.value = value
     client.db.key_space[key] = obj
-    return value
+    return obj
 
 
 @server.command('incrbyfloat', nargs=2)
@@ -807,7 +797,7 @@ def incrbyfloat_handler(client, argv):
 
     obj.value = value
     client.db.key_space[key] = obj
-    return str(value).encode()
+    return obj
 
 
 @server.command('strlen', nargs=1)
@@ -951,7 +941,7 @@ def mget_handler(client, argv):
     for key in argv[1:]:
         try:
             obj = get_object(client.db, key, RedisStringObject)
-            result.append(obj.value)
+            result.append(obj)
         except (ValueError, KeyError):
             result.append(None)
 

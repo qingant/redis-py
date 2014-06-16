@@ -2,6 +2,7 @@ import pickle
 import time
 
 from redis.server import current_server as server
+from redis.server.server import RedisClientBase
 from redis.common.objects import RedisStringObject
 from redis.common.utils import abort, close_connection
 from redis.common.utils import nargs_greater_equal
@@ -43,10 +44,10 @@ def dump_handler(client, argv):
     * Values are encoded in the same format used by RDB.
 
     * An RDB version is encoded inside the serialized value, so that different Redis versions with
-    incompatible RDB formats will refuse to process the serialized value.
+    incompatible RDB formats will refuse to process the serialized value. *(NOT IMPLEMENTED)*
 
-    The serialized value does NOT contain expire information. In order to capture the time to live of the
-    current value the PTTL command should be used.
+    <del>The serialized value does NOT contain expire information. In order to capture the time to live of the
+    current value the PTTL command should be used.</del>
 
     If key does not exist a nil bulk reply is returned.
 
@@ -59,7 +60,7 @@ def dump_handler(client, argv):
     if key not in client.db.key_space:
         return None
 
-    return pickle.dumps(client.db.key_space[key].value, pickle.HIGHEST_PROTOCOL)
+    return pickle.dumps(client.db.key_space[key], pickle.HIGHEST_PROTOCOL)
 
 
 @server.command('echo', nargs=1)
@@ -169,3 +170,110 @@ def flushdb_handler(client, argv):
     client.db.flush()
 
     return True
+
+
+@server.command('persist', nargs=1)
+def persist_handler(client, argv):
+    '''
+    Remove the existing timeout on key, turning the key from volatile (a key with an expire set) to
+    persistent (a key that will never expire as no timeout is associated).
+
+    .. code::
+        PERSIST key
+
+    '''
+
+    key = argv[1]
+    try:
+        obj = get_object(client.db, key)
+    except KeyError:
+        return 0
+
+    obj.expire_time = None
+    return 1
+
+
+@server.command('pexpire', nargs=2)
+def pexpire_handler(client, argv):
+    '''
+    This command works exactly like EXPIRE but the time to live of the key is specified in milliseconds
+    instead of seconds.
+
+    .. code::
+        PEXPIRE key milliseconds
+
+    '''
+
+    key, milliseconds = argv[1], argv[2]
+
+    try:
+        milliseconds = int(milliseconds)
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
+    try:
+        obj = get_object(client.db, key)
+    except KeyError:
+        return 0
+
+    obj.expire_time = time.time() + milliseconds / 1000.0
+    return 1
+
+
+@server.command('pexpireat', nargs=2)
+def pexpireat_handler(client, argv):
+    '''
+    PEXPIREAT has the same effect and semantic as EXPIREAT, but the Unix time at which the key will
+    expire is specified in milliseconds instead of seconds.
+
+    .. code::
+        PEXPIREAT key milliseconds-timestamp
+
+    '''
+
+    key, milliseconds = argv[1], argv[2]
+
+    try:
+        milliseconds = int(milliseconds)
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
+    try:
+        obj = get_object(client.db, key)
+    except KeyError:
+        return 0
+
+    obj.expire_time = milliseconds / 1000.0
+    return 1
+
+
+@server.command('multi', nargs=0)
+def multi_handler(client, argv):
+    '''
+
+    '''
+
+    if client.stat == RedisClientBase.STAT_MULTI:
+        abort(message='MULTI calls can not be nested')
+
+    client.stat = RedisClientBase.STAT_MULTI
+    return True
+
+
+@server.command('exec', nargs=0)
+def exec_handler(client, argv):
+    '''
+
+    '''
+
+    if client.stat != RedisClientBase.STAT_MULTI:
+        abort(message='EXEC without MULTI')
+
+    ret = []
+    for cmd in client.multi_command_list:
+        ret.append(client.exec_command(cmd))
+
+    client.multi_command_list = []
+    client.stat = RedisClientBase.STAT_NORMAL
+
+    return ret

@@ -36,12 +36,15 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=install_reqs,
-    test_suite='redis.testsuite',
+    test_suite='nose.collector',
+    setup_requires=[
+        'nose>=1.0',
+    ],
     zip_safe=False,
     keywords=p.title,
     entry_points={
         'console_scripts': [
-            'redis-server=redis.server.servermain:server_main'
+            'redis-server=redis.server_impl:server_main'
         ]
     },
     classifiers=[

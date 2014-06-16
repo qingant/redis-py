@@ -8,6 +8,14 @@ from redis.common.exceptions import CommandNotFoundError, CommandError, ClientQu
 from redis.common.utils import close_connection, abort
 from .storage import RedisDatabase
 
+from redis.common.proto import RedisSerializationObject, \
+    RedisSimpleStringSerializationObject, RedisErrorStringSerializationObject, \
+    RedisIntegerSerializationObject, RedisListSerializationObject, RedisBulkStringSerializationObject
+
+from redis.common.objects import RedisObject
+
+from redis.common.proto import resp_loads, InlineProtocolParser
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -32,7 +40,31 @@ class RedisServerMixin(object):
                         if not nargs(len(argv) - 1):
                             abort(message="wrong number of arguments for '%s' command" % cmd.decode())
 
-                return func(client, argv)
+                try:
+                    ret = func(client, argv)
+
+                    if isinstance(ret, RedisObject):
+                        return ret.serialize()
+                    elif isinstance(ret, RedisSerializationObject):
+                        return ret
+                    elif ret is True:
+                        return RedisSimpleStringSerializationObject('OK')
+                    elif isinstance(ret, int):
+                        # This line shouldn't put before the ``ret is True``
+                        # **Cuz True is an integer**
+                        return RedisIntegerSerializationObject(ret)
+                    elif isinstance(ret, (list, types.GeneratorType)):
+                        return RedisListSerializationObject(ret)
+                    elif ret is None:
+                        return RedisBulkStringSerializationObject(None)
+                    else:
+                        raise ValueError('Invalid reply %s' % ret)
+                except CommandNotFoundError as e:
+                    return RedisErrorStringSerializationObject(errtype='ERR', message=str(e))
+                except CommandError as e:
+                    errtype, message = e.args
+                    return RedisErrorStringSerializationObject(errtype=errtype, message=message)
+
             self.handlers[cmd.lower()] = __wrapper
             return __wrapper
         return wrapper
@@ -45,7 +77,13 @@ class RedisServerMixin(object):
         return self.handlers[cmd](client_instance, argv)
 
 
-class RedisServer(RedisServerMixin):
+class RedisServerTestClientMixin:
+
+    def get_test_client(self):
+        return RedisTestClient(self)
+
+
+class RedisServer(RedisServerMixin, RedisServerTestClientMixin):
 
     def __init__(self, *args, **kwargs):
         super(RedisServer, self).__init__(*args, **kwargs)
@@ -103,13 +141,14 @@ class RedisServer(RedisServerMixin):
             loop.close()
 
 
-class RedisClient(object):
+class RedisClientBase:
 
-    def __init__(self, server, stream_reader, stream_writer):
+    STAT_NORMAL = 0
+    STAT_MULTI = 1
+    STAT_EXEC = 2
+
+    def __init__(self, server):
         self.server = server
-        self.stream_reader = stream_reader
-        self.stream_writer = stream_writer
-        self.proto = RedisProtocol(self.stream_reader)
 
         self.name = None
         self.parse_until = None
@@ -121,10 +160,13 @@ class RedisClient(object):
         self.idle_time = 0
         self.last_active_time = self.conn_time
 
+        self.stat = RedisClient.STAT_NORMAL
+        self.multi_command_list = []
+
     def get_info_str(self):
         return 'addr={addr} fd= name={name} age={age} idle={idle} flags= db={db} sub= psub= multi= qbuf= ' \
             'qbuf-free= obl= oll= omem= events= cmd={last_cmd}'.format(
-                addr=self.ipaddr,
+                addr='',
                 age=int(time.time() - self.conn_time),
                 idle=int(self.idle_time),
                 db=self.db.idnum,
@@ -138,6 +180,72 @@ class RedisClient(object):
 
     def change_db(self, dbnum):
         self._db = self.server.get_database(dbnum)
+
+    def exec_command(self, argv):
+        '''
+        Execute the command and serialize the return value as the REdis Serializaion Protocol representation.
+
+        :return: RESP value
+        :rtype: RedisSerializationObject
+
+        '''
+
+        return self.server.exec_command(argv, self)
+
+    def run(self):
+        raise NotImplementedError()
+
+
+class RedisTestClient(RedisClientBase):
+
+    def __init__(self, server):
+        super(RedisTestClient, self).__init__(server)
+
+    def execute(self, command_str):
+        if isinstance(command_str, str):
+            command_str = command_str.encode()
+        elif isinstance(command_str, bytes):
+            command_str = command_str
+        else:
+            raise ValueError('Command string should be a str or bytes')
+
+        if command_str.startswith(b'*'):
+            lst = resp_loads(command_str)
+            if not isinstance(lst, RedisListSerializationObject):
+                raise ValueError('Command is not a RESP list')
+            argv = []
+            for item in lst:
+                if not isinstance(item, RedisBulkStringSerializationObject):
+                    raise ValueError('Command should not contain a %s' % item)
+                argv.append(item._value)
+        else:
+            argv = InlineProtocolParser.parse_line(command_str)
+
+        if self.stat == RedisClientBase.STAT_MULTI \
+                and argv[0].upper() != b'EXEC':
+            self.multi_command_list.append(argv)
+            return RedisSimpleStringSerializationObject('QUEUED')
+
+        return self.server.exec_command(argv, self).to_resp()
+
+
+class RedisClient(RedisClientBase):
+
+    def __init__(self, server, stream_reader, stream_writer):
+        super(RedisClientBase, self).__init__(server)
+        self.stream_reader = stream_reader
+        self.stream_writer = stream_writer
+
+    def get_info_str(self):
+        return 'addr={addr} fd= name={name} age={age} idle={idle} flags= db={db} sub= psub= multi= qbuf= ' \
+            'qbuf-free= obl= oll= omem= events= cmd={last_cmd}'.format(
+                addr=self.ipaddr,
+                age=int(time.time() - self.conn_time),
+                idle=int(self.idle_time),
+                db=self.db.idnum,
+                last_cmd=self.last_cmd,
+                name=self.name if self.name is not None else ''
+            )
 
     @property
     def transport(self):
@@ -158,8 +266,8 @@ class RedisClient(object):
             try:
                 argv = yield from self.proto.get_command()
             except ProtocolError as e:
-                self.write_error(errtype='ERR', message='Protocol error: %s' % e)
-                self.stream_writer.transport.close()
+                self.write_object(RedisErrorStringSerializationObject(errtype='ERR', message='Protocol error: %s' % e))
+                self.close()
                 break
             else:
                 cur_time = time.time()
@@ -170,50 +278,29 @@ class RedisClient(object):
                 break
             if len(argv) == 0:
                 continue
-            try:
-                ret = self.server.exec_command(argv, self)
-                self.write_object(ret)
-            except CommandNotFoundError as e:
-                self.write_error(errtype='ERR', message=e)
-            except CommandError as e:
-                errtype, message = e.args
-                self.write_error(errtype=errtype, message=message)
-            except ClientQuitError as e:
-                self.write_simple_string('OK')
-                self.stream_writer.transport.close()
+
+            if argv[0].upper() == b'QUIT':
+                self.write_object(RedisSimpleStringSerializationObject('OK'))
+                self.close()
                 break
+
+            if self.stat == RedisClientBase.STAT_MULTI \
+                    and argv[0].upper() != b'EXEC':
+                self.multi_command_list.append(argv)
+                self.write_object(RedisSimpleStringSerializationObject('QUEUED'))
+                continue
+
+            ret = self.exec_command(argv)
+            self.write_object(ret)
             self.last_cmd = argv[0].decode()
 
         logger.info('client {} exiting'.format(self.ipaddr))
 
-    def write_error(self, errtype, message):
-        resp = '-{errtype} {message}\r\n'.format(errtype=errtype, message=message)
-        self.stream_writer.write(resp.encode())
-
-    def write_simple_string(self, string):
-        resp = '+{string}\r\n'.format(string=string)
-        self.stream_writer.write(resp.encode())
+    def close(self):
+        yield from self.stream_writer.drain()
+        self.stream_writer.close()
 
     def write_object(self, obj):
-        if obj is True:
-            self.write_simple_string('OK')
-        else:
-            resp = self.serialize_to_resp(obj)
-            self.stream_writer.write(resp)
-
-    def serialize_to_resp(self, obj):
-        if isinstance(obj, list):
-            resp = [b'*' + str(len(obj)).encode() + b'\r\n']
-            for o in obj:
-                resp.append(self.serialize_to_resp(o))
-            return b''.join(resp)
-        elif isinstance(obj, str):
-            obj = obj.encode()
-            return b''.join((b'$', str(len(obj)).encode(), b'\r\n', obj, b'\r\n'))
-        elif isinstance(obj, bytes):
-            return b''.join((b'$', str(len(obj)).encode(), b'\r\n', obj, b'\r\n'))
-        elif isinstance(obj, int):
-            resp = ':%d\r\n' % obj
-            return resp.encode()
-        elif obj is None:
-            return b'$-1\r\n'
+        if not isinstance(obj, RedisSerializationObject):
+            raise ValueError('Object should be a RedisSerializationObject')
+        self.stream_writer.write(obj.to_resp())

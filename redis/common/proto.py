@@ -3,11 +3,294 @@ import io
 import asyncio
 import types
 
+from .objects import RedisObject, RedisListObject, RedisStringObject
+
+
+class RedisSerializationObject:
+
+    def to_resp(self):
+        '''
+        To REdis Serialization Protocol representation bytes.
+
+        This method should return bytes.
+        '''
+        raise NotImplementedError()
+
+
+class RedisSimpleStringSerializationObject(RedisSerializationObject):
+
+    '''
+    Format::
+
+        +{string_content}\\r\\n
+
+    Example::
+
+        +OK\\r\\n
+    '''
+
+    def __init__(self, value):
+        if not isinstance(value, bytes):
+            self._value = str(value).encode()
+        else:
+            self._value = value
+
+    def to_resp(self):
+        '''
+        Format::
+
+            +{string_content}\\r\\n
+
+        Example::
+
+            +OK\\r\\n
+        '''
+
+        return b'+' + self._value + b'\r\n'
+
+
+class RedisErrorStringSerializationObject(RedisSerializationObject):
+
+    '''
+    Error string should be a simple string, but begins with a ``-``
+
+    Format::
+
+        -{ErrType} {ErrMessage}\\r\\n
+
+    Example::
+
+        -ERR value is not a valid float
+
+    '''
+
+    def __init__(self, errtype='ERR', message=''):
+        self._errtype = errtype
+        self._message = message
+
+    def to_resp(self):
+        '''
+        Format::
+
+            -{ErrType} {ErrMessage}\\r\\n
+
+        Example::
+
+            -ERR value is not a valid float
+        '''
+
+        return b'-' + '{} {}'.format(self._errtype, self._message).encode() + b'\r\n'
+
+
+class RedisIntegerSerializationObject(RedisSerializationObject):
+
+    '''
+    Format::
+
+        :{integer_value}\\r\\n
+
+    Example::
+
+        :10\\r\\n
+
+    '''
+
+    def __init__(self, value):
+        if isinstance(value, int):
+            self._value = value
+        elif isinstance(value, RedisIntegerSerializationObject):
+            self._value = value._value
+        else:
+            raise ValueError('Value should be an integer')
+
+    def to_resp(self):
+        return b':' + str(self._value).encode() + b'\r\n'
+
+
+class RedisBulkStringSerializationObject(RedisSerializationObject):
+
+    '''
+    Format::
+
+        ${string_length}\\r\\n
+        {string_content}\\r\\n
+
+    Specially, if string is None, then length should be -1.
+
+    Example::
+
+        $5\\r\\n
+        Hello\\r\\n
+    '''
+
+    def __init__(self, value):
+        if isinstance(value, bytes):
+            self._value = value
+        elif isinstance(value, RedisStringObject):
+            self._value = value.get_bytes()
+        elif isinstance(value, str):
+            self._value = value.encode()
+        elif value is None:
+            self._value = None
+        else:
+            self._value = str(value).encode()
+
+    def to_resp(self):
+        '''
+        Format::
+
+            ${string_length}\\r\\n
+            {string_content}\\r\\n
+
+        Specially, if string is None, then length should be -1.
+
+        Example::
+
+            $5\\r\\n
+            Hello\\r\\n
+        '''
+
+        if self._value is None:
+            return b'$-1\r\n'
+
+        return b''.join((
+            b'$',
+            str(len(self._value)).encode(),
+            b'\r\n',
+            self._value,
+            b'\r\n',
+        ))
+
+
+class RedisListSerializationObject(RedisSerializationObject):
+
+    '''
+    Format::
+
+        *{list_lenth}\\r\\n
+        {list_content}\\r\\n
+        {list_content}\\r\\n
+
+    Example::
+
+        *2\\r\\n
+        +OK\\r\\n
+        $11\\r\\n
+        Hello World\\r\\n
+    '''
+
+    def __init__(self, value):
+        self._value = []
+
+        for val in value:
+            if not isinstance(val, RedisSerializationObject):
+                if isinstance(val, RedisObject):
+                    self._value.append(val.serialize())
+                elif val is None:
+                    self._value.append(RedisBulkStringSerializationObject(val))
+                else:
+                    raise ValueError('Value should be a RedisObject or RedisSerializationObject')
+            else:
+                self._value.append(val)
+
+    def to_resp(self):
+        '''
+        Format::
+
+            *{list_lenth}\\r\\n
+            {list_content}\\r\\n
+            {list_content}\\r\\n
+
+        Example::
+
+            *2\\r\\n
+            +OK\\r\\n
+            $11\\r\\n
+            Hello World\\r\\n
+        '''
+
+        parts = [b'*', str(len(self._value)).encode(), b'\r\n']
+        for val in self._value:
+            parts.append(val.to_resp())
+        return b''.join(parts)
+
 
 class ProtocolError(Exception):
 
     def __init__(self, *args, **kwargs):
         super(ProtocolError, self).__init__(*args, **kwargs)
+
+
+def resp_dumps(respobj):
+    if isinstance(respobj, RedisSerializationObject):
+        return respobj.to_resp()
+    elif isinstance(respobj, (bytes, str, RedisStringObject)):
+        return RedisBulkStringSerializationObject(respobj).to_resp()
+    elif isinstance(respobj, (list, RedisListObject)):
+        return RedisListSerializationObject(respobj).to_resp()
+    elif respobj is None:
+        return RedisBulkStringSerializationObject(respobj).to_resp()
+    elif respobj is True:
+        return RedisSimpleStringSerializationObject('OK').to_resp()
+    elif isinstance(respobj, int):
+        return RedisIntegerSerializationObject(respobj).to_resp()
+    else:
+        raise ValueError('%s is not RESP serializable' % respobj)
+
+
+def resp_loads(raw_respstr):
+    if not isinstance(raw_respstr, bytes):
+        raise ValueError('Value should be bytes')
+
+    if not raw_respstr.endswith(b'\r\n'):
+        raise ValueError('%s is not a valid RESP string' % raw_respstr)
+
+    sio = io.BytesIO(raw_respstr)
+
+    loaded_objs = []
+    while True:
+        respstr = sio.readline()
+        if respstr == b'':
+            break
+        loaded_objs.append(__resp_loads(respstr, sio))
+
+    if len(loaded_objs) == 1:
+        return loaded_objs[0]
+    else:
+        return loaded_objs
+
+
+def __resp_loads(begin_part, buf):
+    if begin_part.startswith(b'+'):
+        # Simple String
+        return RedisSimpleStringSerializationObject(begin_part[1:-2])
+    elif begin_part.startswith(b'-'):
+        # Simple Error String
+        sps = begin_part.split(b' ')
+        if len(sps) != 2:
+            raise ValueError('%s is not a valid RESP string' % begin_part)
+        return RedisErrorStringSerializationObject(errtype=sps[0].decode(), message=sps[1].decode())
+    elif begin_part.startswith(b'*'):
+        # List
+        obj_list = []
+        length = int(begin_part[1:-2].decode())
+        while length != 0:
+            begin_part = buf.readline()
+            if begin_part == b'':
+                raise ValueError('List length not match')
+            obj_list.append(__resp_loads(begin_part, buf))
+            length -= 1
+        return RedisListSerializationObject(obj_list)
+    elif begin_part.startswith(b'$'):
+        # Bulk string
+        length = int(begin_part[1:-2].decode())
+        strvalue = buf.read(length)
+        lineend = buf.readline()
+        if len(strvalue) != length or len(lineend) != 2:
+            raise ValueError('String length not match or EOF')
+        return RedisBulkStringSerializationObject(strvalue)
+    else:
+        raise ValueError('%s is not a valid RESP string' % begin_part)
 
 
 class RedisProtocol(object):
@@ -61,11 +344,19 @@ class BulkProtocolParser(RedisProtocolParser):
                 arg_length_str = yield from stream_reader.readline()
                 if not arg_length_str.startswith(b'$'):
                     raise ProtocolError("expected '$', got '\\x%x'" % arg_length_str[0])
-                arg = yield from stream_reader.readline()
-                arg = arg.rstrip(b'\r\n')
-                if len(arg) != int(arg_length_str[1:]):
+                try:
+                    arg_length = int(arg_length_str[1:])
+                except ValueError:
+                    raise ProtocolError('Invalid length')
+
+                arg = yield from stream_reader.read(arg_length)
+                if len(arg) != length:
                     raise ProtocolError('Length not match')
                 argv.append(arg)
+
+                rest_of_line = yield from stream_reader.readline()
+                if rest_of_line != b'\r\n':
+                    raise ProtocolError('Length not match')
         return argv
 
     @asyncio.coroutine
@@ -85,42 +376,6 @@ class BulkProtocolParser(RedisProtocolParser):
         else:
             raise ProtocolError('Invalid syntax')
 
-    @asyncio.coroutine
-    def __parse_array(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
-        array_length = int(line[1:])
-        argv = []
-        for i in range(array_length):
-            arg_length_str = yield from stream_reader.readline()
-            if not arg_length_str.startswith(b'$'):
-                raise ProtocolError("expected '$', got '\\x%x'" % arg_length_str[0])
-            arg = yield from stream_reader.readline()
-            arg = arg.rstrip(b'\r\n')
-            if len(arg) != int(arg_length_str[1:]):
-                raise ProtocolError('Length not match')
-            argv.append(arg)
-        return argv
-
-    @asyncio.coroutine
-    def __parse_simple_string(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
-        return line[1:]
-
-    @asyncio.coroutine
-    def __parse_string(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
-        return line[1:]
-
-    @asyncio.coroutine
-    def __parse_error_string(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
-        errstr = line.split(' ', 1)
-        return errstr[0], errstr[1] if len(errstr) > 1 else ''
-
-    @asyncio.coroutine
-    def __parse_integer(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n')
-
 
 class InlineProtocolParser(RedisProtocolParser):
 
@@ -129,7 +384,11 @@ class InlineProtocolParser(RedisProtocolParser):
 
     @asyncio.coroutine
     def get_argvalue(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n').rstrip(b' ').decode('unicode_escape')
+        return self.parse_line(beginline)
+
+    @classmethod
+    def parse_line(self, raw_line):
+        line = raw_line.rstrip(b'\r\n').rstrip(b' ').decode('unicode_escape')
         quote_ = None
         argv = []
         tmp = []

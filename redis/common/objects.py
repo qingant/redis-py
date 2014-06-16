@@ -32,6 +32,14 @@ class RedisObject:
     def value(self, value):
         self._value = value
 
+    def serialize(self):
+        '''
+        Convert to a REdis Serialization Protocol.
+
+
+        '''
+        raise NotImplementedError()
+
 
 class RedisStringObject(RedisObject):
 
@@ -58,6 +66,10 @@ class RedisStringObject(RedisObject):
             return str(self.value).encode()
         return self.value
 
+    def get_range(self, start=None, stop=None):
+        val = self.get_bytes()
+        return RedisStringObject(val[start:stop + 1])
+
     def get_integer(self):
         if isinstance(self.value, Decimal):
             raise ValueError('Value is a Decimal')
@@ -71,12 +83,20 @@ class RedisStringObject(RedisObject):
     def get_float(self):
         return float(self.value)
 
+    def serialize(self):
+        from .proto import RedisBulkStringSerializationObject
+        return RedisBulkStringSerializationObject(self)
+
 
 class RedisListObject(RedisObject):
 
     def __init__(self, value=[], expire_time=None):
         if isinstance(value, types.GeneratorType):
             value = list(value)
+        elif isinstance(value, RedisListObject):
+            value = value.value
+        else:
+            raise ValueError('Value should be a list or RedisListObject')
         super(RedisListObject, self).__init__(value, expire_time)
 
     def push(self, *value):
@@ -91,6 +111,9 @@ class RedisListObject(RedisObject):
             raise IndexError('Out of range')
         return self.value.insert(index, value)
 
+    def append(self, value):
+        self.value.append(value)
+
     def __len__(self):
         return len(self.value)
 
@@ -100,6 +123,12 @@ class RedisListObject(RedisObject):
     def __setitem__(self, index, value):
         self.value[index] = value
 
+    def splice(self, begin=None, end=None, step=None):
+        return RedisListObject(self.value[begin:end:step])
+
+    def __iter__(self):
+        return self.value.__iter__()
+
     def reverse(self):
         return self.value.reverse()
 
@@ -108,3 +137,7 @@ class RedisListObject(RedisObject):
 
     def index(self, value):
         return self.value.index(value)
+
+    def serialize(self):
+        from .proto import RedisListSerializationObject
+        return RedisListSerializationObject(self)

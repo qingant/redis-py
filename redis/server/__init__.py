@@ -1,4 +1,6 @@
 
+from .server import RedisServer
+
 current_server = None
 
 import logging
