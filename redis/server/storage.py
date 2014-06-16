@@ -4,21 +4,15 @@ import time
 key_space = {}
 
 
-class StorageNode(object):
+class RedisDatabase:
 
-    def __init__(self, value, expire_time=None):
-        self._value = value
-        self.expire_time = expire_time
+    def __init__(self, idnum=0):
+        self._idnum = idnum
+        self.key_space = {}
 
     @property
-    def value(self):
-        return self._value
+    def idnum(self):
+        return self._idnum
 
-    @value.setter
-    def value(self, value):
-        self._value = value
-
-    def expired(self):
-        if self.expire_time is not None:
-            return True if time.time() > self.expire_time else False
-        return False
+    def flush(self):
+        self.key_space.clear()

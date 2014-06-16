@@ -1,10 +1,15 @@
 import asyncio
 import functools
 import types
+import time
 
 from redis.common.proto import RedisProtocol, ProtocolError
 from redis.common.exceptions import CommandNotFoundError, CommandError, ClientQuitError
 from redis.common.utils import close_connection, abort
+from .storage import RedisDatabase
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class RedisServerMixin(object):
@@ -17,27 +22,27 @@ class RedisServerMixin(object):
 
         def wrapper(func):
             @functools.wraps(func)
-            def __wrapper(raw_argv):
+            def __wrapper(client, argv):
 
                 if nargs is not None:
                     if isinstance(nargs, int):
-                        if len(raw_argv) - 1 != nargs:
+                        if len(argv) - 1 != nargs:
                             abort(message="wrong number of arguments for '%s' command" % cmd.decode())
                     elif isinstance(nargs, types.FunctionType):
-                        if not nargs(len(raw_argv) - 1):
+                        if not nargs(len(argv) - 1):
                             abort(message="wrong number of arguments for '%s' command" % cmd.decode())
 
-                return func(raw_argv)
+                return func(client, argv)
             self.handlers[cmd.lower()] = __wrapper
             return __wrapper
         return wrapper
 
-    def exec_command(self, argv):
+    def exec_command(self, argv, client_instance):
         cmd = argv[0].lower()
         if not hasattr(self, 'handlers') or cmd not in self.handlers:
             raise CommandNotFoundError("unknown command '%s'" % cmd.decode())
 
-        return self.handlers[cmd](argv)
+        return self.handlers[cmd](client_instance, argv)
 
 
 class RedisServer(RedisServerMixin):
@@ -47,21 +52,52 @@ class RedisServer(RedisServerMixin):
         import redis.server
         redis.server.current_server = self
 
+        self.clients = dict()
+        self.dbs = {
+            0: RedisDatabase(0),
+        }
+        self.pause_seconds = None
+
+    def all_databases(self):
+        return self.dbs.values()
+
+    def default_database(self):
+        return self.dbs[0]
+
+    def get_database(self, dbnum):
+        if dbnum not in self.dbs:
+            self.dbs[dbnum] = RedisDatabase(dbnum)
+        return self.dbs[dbnum]
+
+    def kill_client(self, ipaddr):
+        client = self.clients[ipaddr]
+        client.transport.close()
+
+    def pause_all_clients(self, seconds):
+        self.pause_seconds = seconds
+        raise NotImplementedError()
+
+    def get_clients_info_str(self):
+        repr_strs = [client.get_info_str() for ipaddr, client in self.clients.items()]
+        return '\r'.join(repr_strs)
+
     @asyncio.coroutine
     def client_connected_cb(self, stream_reader, stream_writer):
         client = RedisClient(self, stream_reader, stream_writer)
+        self.clients[client.ipaddr] = client
         yield from client.run()
+        del self.clients[client.ipaddr]
 
     def run(self, host=None, port=8888):
         loop = asyncio.get_event_loop()
         coro = asyncio.start_server(self.client_connected_cb, host=host, port=port, loop=loop)
         server = loop.run_until_complete(coro)
-        print('serving on {}'.format(server.sockets[0].getsockname()))
+        logger.info('serving on {}'.format(server.sockets[0].getsockname()))
 
         try:
             loop.run_forever()
         except KeyboardInterrupt:
-            print("exit")
+            logger.info('exiting')
         finally:
             server.close()
             loop.close()
@@ -75,7 +111,49 @@ class RedisClient(object):
         self.stream_writer = stream_writer
         self.proto = RedisProtocol(self.stream_reader)
 
+        self.name = None
+        self.parse_until = None
+
+        self._db = self.server.default_database()
+
+        self.last_cmd = None
+        self.conn_time = time.time()
+        self.idle_time = 0
+        self.last_active_time = self.conn_time
+
+    def get_info_str(self):
+        return 'addr={addr} fd= name={name} age={age} idle={idle} flags= db={db} sub= psub= multi= qbuf= ' \
+            'qbuf-free= obl= oll= omem= events= cmd={last_cmd}'.format(
+                addr=self.ipaddr,
+                age=int(time.time() - self.conn_time),
+                idle=int(self.idle_time),
+                db=self.db.idnum,
+                last_cmd=self.last_cmd,
+                name=self.name if self.name is not None else ''
+            )
+
+    @property
+    def db(self):
+        return self._db
+
+    def change_db(self, dbnum):
+        self._db = self.server.get_database(dbnum)
+
+    @property
+    def transport(self):
+        return self.stream_writer.transport
+
+    @property
+    def peername(self):
+        return self.transport.get_extra_info('peername')
+
+    @property
+    def ipaddr(self):
+        ipaddr, ipport, *others = self.peername
+        return '%s:%s' % (ipaddr, ipport)
+
     def run(self):
+        logger.info('client {} connected'.format(self.ipaddr))
         while True:
             try:
                 argv = yield from self.proto.get_command()
@@ -83,13 +161,17 @@ class RedisClient(object):
                 self.write_error(errtype='ERR', message='Protocol error: %s' % e)
                 self.stream_writer.transport.close()
                 break
+            else:
+                cur_time = time.time()
+                self.idle_time += cur_time - self.last_active_time
+                self.last_active_time = cur_time
 
             if argv is None:
                 break
             if len(argv) == 0:
                 continue
             try:
-                ret = self.server.exec_command(argv)
+                ret = self.server.exec_command(argv, self)
                 self.write_object(ret)
             except CommandNotFoundError as e:
                 self.write_error(errtype='ERR', message=e)
@@ -100,8 +182,9 @@ class RedisClient(object):
                 self.write_simple_string('OK')
                 self.stream_writer.transport.close()
                 break
+            self.last_cmd = argv[0].decode()
 
-        print('Client closed')
+        logger.info('client {} exiting'.format(self.ipaddr))
 
     def write_error(self, errtype, message):
         resp = '-{errtype} {message}\r\n'.format(errtype=errtype, message=message)

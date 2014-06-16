@@ -1,12 +1,12 @@
 from redis.server import current_server as server
-from redis.server.storage import key_space
 from redis.common.objects import RedisListObject
 from redis.common.utils import abort, close_connection
 from redis.common.utils import nargs_greater_equal
+from redis.common.utils import get_object
 
 
 @server.command('lindex', nargs=2)
-def lindex_handler(argv):
+def lindex_handler(client, argv):
     '''
     Returns the element at index index in the list stored at key. The index is zero-based, so 0
     means the first element, 1 the second element and so on. Negative indices can be used to designate
@@ -29,13 +29,12 @@ def lindex_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return None
-
-    if not isinstance(key_space[key], RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-
-    obj = key_space[key]
 
     try:
         return obj[index]
@@ -44,7 +43,7 @@ def lindex_handler(argv):
 
 
 @server.command('lpush', nargs=nargs_greater_equal(2))
-def lpush_handler(argv):
+def lpush_handler(client, argv):
     '''
     Insert all the specified values at the head of the list stored at key. If key does not exist,
     it is created as empty list before performing the push operations. When key holds a value that
@@ -66,13 +65,13 @@ def lpush_handler(argv):
 
     key, values = argv[1], argv[2:]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         obj = RedisListObject()
-        key_space[key] = obj
-    else:
-        obj = key_space[key]
-        if not isinstance(obj, RedisListObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        client.db.key_space[key] = obj
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     # for value in values:
     obj.push(*values)
@@ -81,7 +80,7 @@ def lpush_handler(argv):
 
 
 @server.command('lpushx', nargs=2)
-def lpushx_handler(argv):
+def lpushx_handler(client, argv):
     '''
     Inserts value at the head of the list stored at key, only if key already exists and holds a list.
     In contrary to LPUSH, no operation will be performed when key does not yet exist.
@@ -96,11 +95,11 @@ def lpushx_handler(argv):
 
     key, value = argv[1], argv[2]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return 0
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     obj.push(value)
@@ -108,7 +107,7 @@ def lpushx_handler(argv):
 
 
 @server.command('lrange', nargs=3)
-def lrange_handler(argv):
+def lrange_handler(client, argv):
     '''
     Returns the specified elements of the list stored at key. The offsets start and stop are zero-based
     indexes, with 0 being the first element of the list (the head of the list), 1 being the next element
@@ -132,11 +131,11 @@ def lrange_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return []
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if start < 0:
@@ -148,7 +147,7 @@ def lrange_handler(argv):
 
 
 @server.command('lrem', nargs=3)
-def lrem_handler(argv):
+def lrem_handler(client, argv):
     '''
     Removes the first count occurrences of elements equal to value from the list stored at key. The
     count argument influences the operation in the following ways:
@@ -177,10 +176,13 @@ def lrem_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return 0
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    obj = key_space[key]
     if count < 0:
         count *= -1
         objlst = obj[::-1]
@@ -208,7 +210,7 @@ def lrem_handler(argv):
 
 
 @server.command('llen', nargs=1)
-def llen_handler(argv):
+def llen_handler(client, argv):
     '''
     Returns the length of the list stored at key. If key does not exist, it is interpreted as an empty
     list and 0 is returned. An error is returned when the value stored at key is not a list.
@@ -221,18 +223,18 @@ def llen_handler(argv):
     '''
 
     key = argv[1]
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return 0
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return len(obj)
 
 
 @server.command('lpop', nargs=1)
-def lpop_handler(argv):
+def lpop_handler(client, argv):
     '''
     Removes and returns the first element of the list stored at key.
 
@@ -245,11 +247,11 @@ def lpop_handler(argv):
     '''
 
     key = argv[1]
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return 0
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -259,7 +261,7 @@ def lpop_handler(argv):
 
 
 @server.command('lset', nargs=3)
-def lset_handler(argv):
+def lset_handler(client, argv):
     '''
 
     Sets the list element at index to value. For more information on the index argument, see LINDEX.
@@ -278,11 +280,11 @@ def lset_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         abort(message='index out of range')
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if index < 0:
@@ -296,7 +298,7 @@ def lset_handler(argv):
 
 
 @server.command('ltrim', nargs=3)
-def ltrim_handler(argv):
+def ltrim_handler(client, argv):
     '''
     Trim an existing list so that it will contain only the specified range of elements specified.
     Both start and stop are zero-based indexes, where 0 is the first element of the list (the head),
@@ -325,11 +327,11 @@ def ltrim_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
         return True
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if start < 0:
@@ -342,7 +344,7 @@ def ltrim_handler(argv):
 
 
 @server.command('linsert', nargs=4)
-def linsert(argv):
+def linsert(client, argv):
     '''
     Inserts value in the list stored at key either before or after the reference value pivot.
 
@@ -363,16 +365,16 @@ def linsert(argv):
     if op not in (b'BEFORE', b'AFTER'):
         abort(message='syntax error')
 
-    if key not in key_space:
-        return None
-
     if op == b'BEFORE':
         op_func = lambda index: index
     else:
         op_func = lambda index: index + 1
 
-    obj = key_space[key]
-    if not isinstance(obj, RedisListObject):
+    try:
+        obj = get_object(client.db, key, RedisListObject)
+    except KeyError:
+        return None
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:

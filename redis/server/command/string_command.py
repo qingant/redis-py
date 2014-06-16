@@ -1,16 +1,16 @@
 
 from redis.server import current_server as server
-from redis.server.storage import key_space
 from redis.common.objects import RedisStringObject
 from redis.common.utils import abort, close_connection
 from redis.common.utils import nargs_greater_equal
+from redis.common.utils import group_iter, get_object
 import time
 import bitarray
 from decimal import InvalidOperation, Decimal
 
 
 @server.command('quit', nargs=0)
-def quit_handler(argv):
+def quit_handler(client, argv):
     '''
     Client request to close connection.
 
@@ -20,7 +20,7 @@ def quit_handler(argv):
 
 
 @server.command('bitcount', nargs=nargs_greater_equal(1))
-def bitcount_handler(argv):
+def bitcount_handler(client, argv):
     '''
     Count the number of set bits (population counting) in a string.
 
@@ -49,11 +49,11 @@ def bitcount_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisStringObject)
+    except KeyError:
         return 0
-
-    obj = key_space[key]
-    if not isinstance(obj, RedisStringObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if end == -1:
@@ -67,7 +67,7 @@ def bitcount_handler(argv):
 
 
 @server.command('bitop', nargs=nargs_greater_equal(3))
-def bitop_handler(argv):
+def bitop_handler(client, argv):
     '''
     Perform a bitwise operation between multiple keys (containing string values) and store the result in
     the destination key.
@@ -102,17 +102,18 @@ def bitop_handler(argv):
         if len(keys) > 1:
             abort(message='BITOP NOT must be called with a single source key.')
 
-        if keys[0] not in key_space:
+        try:
+            obj = get_object(client.db, keys[0], RedisStringObject)
+        except KeyError:
             return 0
-
-        if not isinstance(key_space[keys[0]], RedisStringObject):
+        except ValueError:
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
         ba = bitarray.bitarray()
-        ba.frombytes(key_space[keys[0]].get_bytes())
+        ba.frombytes(obj.get_bytes())
         ba.invert()
-        key_space[destkey] = RedisStringObject(ba.tobytes())
-        return len(key_space[destkey].value)
+        client.db.key_space[destkey] = RedisStringObject(ba.tobytes())
+        return len(client.db.key_space[destkey].value)
 
     if operation == b'AND':
         oper_func = lambda a, b: a & b
@@ -122,33 +123,37 @@ def bitop_handler(argv):
         oper_func = lambda a, b: a ^ b
 
     dest_ba = bitarray.bitarray()
-    if keys[0] in key_space:
-        if not isinstance(key_space[keys[0]], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        dest_ba.frombytes(key_space[keys[0]].get_bytes())
+    try:
+        obj = get_object(client.db, keys[0], RedisStringObject)
+        dest_ba.frombytes(obj.get_bytes())
+    except KeyError:
+        pass
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     for key in keys[1:]:
-        if key not in key_space:
-            src_ba = bitarray.bitarray('0' * len(dest_ba))
-        else:
-            if not isinstance(key_space[key], RedisStringObject):
-                abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+        try:
+            obj = get_object(client.db, key, RedisStringObject)
             src_ba = bitarray.bitarray()
-            src_ba.frombytes(key_space[key].get_bytes())
+            src_ba.frombytes(obj.get_bytes())
 
             if len(src_ba) > len(dest_ba):
                 dest_ba.extend([0] * (len(src_ba) - len(dest_ba)))
             elif len(dest_ba) > len(src_ba):
                 src_ba.extend([0] * (len(dest_ba) - len(src_ba)))
+        except KeyError:
+            src_ba = bitarray.bitarray('0' * len(dest_ba))
+        except ValueError:
+            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
         dest_ba = oper_func(dest_ba, src_ba)
 
-    key_space[destkey] = RedisStringObject(dest_ba.tobytes())
-    return len(key_space[destkey].get_bytes())
+    client.db.key_space[destkey] = RedisStringObject(dest_ba.tobytes())
+    return len(client.db.key_space[destkey].get_bytes())
 
 
 @server.command('bitpos', nargs=nargs_greater_equal(2))
-def bitpos_handler(argv):
+def bitpos_handler(client, argv):
     '''
     Return the position of the first bit set to 1 or 0 in a string.
 
@@ -219,23 +224,24 @@ def bitpos_handler(argv):
         end = None
 
     begin_pos = 0
-    if key not in key_space:
-        ba = bitarray.bitarray(b'0')
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+    try:
+        obj = get_object(client.db, key, RedisStringObject)
         ba = bitarray.bitarray()
         if start is not None:
             if start < 0:
-                start = len(key_space[key].get_bytes()) + start
+                start = len(obj.get_bytes()) + start
             begin_pos = start * 8
 
         if end is not None:
             if end < 0:
-                end = len(key_space[key].get_bytes()) + end
+                end = len(obj.get_bytes()) + end
             end += 1
 
-        ba.frombytes(key_space[key].get_bytes()[start:end])
+        ba.frombytes(obj.get_bytes()[start:end])
+    except KeyError:
+        ba = bitarray.bitarray(b'0')
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     pos = ba.search(bitarray.bitarray(str(bit)), 1)
     if len(pos) == 0:
@@ -245,7 +251,7 @@ def bitpos_handler(argv):
 
 
 @server.command('set', nargs=nargs_greater_equal(2))
-def set_handler(argv):
+def set_handler(client, argv):
     '''
     Set the string value of a key
 
@@ -298,21 +304,24 @@ def set_handler(argv):
     if nx and xx:
         abort(message='syntax error')
 
-    if nx and key in key_space:
-        return None
-    if xx and key not in key_space:
-        return None
+    try:
+        get_object(client.db, key)
+        if xx:
+            return None
+    except KeyError:
+        if nx:
+            return None
 
     try:
         value = int(value)
     except ValueError:
         pass
-    key_space[key] = RedisStringObject(value, expire_time=expire_time)
+    client.db.key_space[key] = RedisStringObject(value, expire_time=expire_time)
     return True
 
 
 @server.command('setbit', nargs=3)
-def setbit_handler(argv):
+def setbit_handler(client, argv):
     '''
     Sets or clears the bit at offset in the string value stored at key.
 
@@ -328,7 +337,7 @@ def setbit_handler(argv):
     '''
 
     key, offset, value = argv[1], argv[2], argv[3]
-    if key in key_space and not isinstance(key_space[key], RedisStringObject):
+    if key in client.db.key_space and not isinstance(client.db.key_space[key], RedisStringObject):
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -339,23 +348,24 @@ def setbit_handler(argv):
 
     ba = bitarray.bitarray()
 
-    if key in key_space:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        ba.frombytes(key_space[key].get_bytes())
-    else:
-        key_space[key] = RedisStringObject()
+    try:
+        obj = get_object(client.db, key, RedisStringObject)
+        ba.frombytes(obj.get_bytes())
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+    except KeyError:
+        pass
 
     if len(ba) < offset:
         ba.extend([0] * (offset - len(ba) + 1))
 
     ba[offset] = value
-    key_space[key].value = ba.tobytes()
+    client.db.key_space[key].value = ba.tobytes()
     return True
 
 
 @server.command('setex', nargs=3)
-def setex_handler(argv):
+def setex_handler(client, argv):
     '''
     Set key to hold the string value and set key to timeout after a given number of seconds.
     This command is equivalent to executing the following commands:
@@ -373,12 +383,12 @@ def setex_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    key_space[key] = RedisStringObject(value, expire_time=time.time() + seconds)
+    client.db.key_space[key] = RedisStringObject(value, expire_time=time.time() + seconds)
     return True
 
 
 @server.command('setnx', nargs=2)
-def setnx_handler(argv):
+def setnx_handler(client, argv):
     '''
     Set key to hold string value if key does not exist. In that case, it is equal to SET.
     When key already holds a value, no operation is performed. SETNX is short for "SET if N ot e X ists".
@@ -392,14 +402,14 @@ def setnx_handler(argv):
     '''
 
     key, value = argv[1], argv[2]
-    if key in key_space:
+    if key in client.db.key_space:
         return 0
-    key_space[key] = RedisStringObject(value)
+    client.db.key_space[key] = RedisStringObject(value)
     return 1
 
 
 @server.command('setrange', nargs=3)
-def setrange_handler(argv):
+def setrange_handler(client, argv):
     '''
     Overwrites part of the string stored at key, starting at the specified offset, for the entire
     length of value. If the offset is larger than the current length of the string at key, the string
@@ -423,10 +433,10 @@ def setrange_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    if key not in client.db.key_space:
         obj = RedisStringObject()
     else:
-        obj = key_space[key]
+        obj = client.db.key_space[key]
         if not isinstance(obj, RedisStringObject):
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
@@ -437,12 +447,12 @@ def setrange_handler(argv):
         stor_value = stor_value[0:offset + 1] + value
 
     obj.value = stor_value
-    key_space[key] = obj
+    client.db.key_space[key] = obj
     return len(stor_value)
 
 
 @server.command('get', nargs=1)
-def get_handler(argv):
+def get_handler(client, argv):
     '''
     Get the value of key. If the key does not exist the special value nil is returned.
     An error is returned if the value stored at key is not a string, because GET only handles string values.
@@ -453,20 +463,17 @@ def get_handler(argv):
     '''
 
     key = argv[1]
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, RedisStringObject)
+        return obj.get_bytes()
+    except KeyError:
         return None
-
-    if key_space[key].expired():
-        del key_space[key]
-        return None
-
-    if not isinstance(key_space[key], RedisStringObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-    return key_space[key].get_bytes()
 
 
 @server.command('getbit', nargs=2)
-def getbit_handler(argv):
+def getbit_handler(client, argv):
     '''
     Returns the bit value at offset in the string value stored at key.
 
@@ -486,23 +493,21 @@ def getbit_handler(argv):
     except ValueError:
         abort(message='bit offset is not an integer or out of range')
 
-    if key not in key_space:
-        return 0
-
-    if not isinstance(key_space[key], RedisStringObject):
-        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-
-    ba = bitarray.bitarray()
-    ba.frombytes(key_space[key].get_bytes())
-
     try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        ba = bitarray.bitarray()
+        ba.frombytes(obj.get_bytes())
         return int(ba[offset])
+    except KeyError:
+        return None
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
     except IndexError:
         return 0
 
 
 @server.command('getrange', nargs=3)
-def getrange_handler(argv):
+def getrange_handler(client, argv):
     '''
     Returns the substring of the string value stored at key, determined by the offsets start and end
     (both are inclusive). Negative offsets can be used in order to provide an offset starting from the
@@ -524,13 +529,15 @@ def getrange_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
-        return b""
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
 
-    if not isinstance(key_space[key], RedisStringObject):
+    except KeyError:
+        return b''
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    val = key_space[key].get_bytes()
+    val = obj.get_bytes()
     if start < 0:
         start = len(val) + start
     if end < 0:
@@ -539,7 +546,7 @@ def getrange_handler(argv):
 
 
 @server.command('getset', nargs=2)
-def getset_handler(argv):
+def getset_handler(client, argv):
     '''
     Atomically sets key to value and returns the old value stored at key. Returns an error when key
     exists but does not hold a string value.
@@ -551,26 +558,27 @@ def getset_handler(argv):
 
     key, value = argv[1], argv[2]
 
-    if key in key_space and not isinstance(key_space[key], RedisStringObject):
-        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-
     try:
         value = int(value)
     except ValueError:
         pass
 
-    if key in key_space:
-        orig_value = key_space[key].get_bytes()
-        key_space[key].value = value
-    else:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+
+        orig_value = obj.get_bytes()
+        obj.value = value
+    except KeyError:
         orig_value = None
-        key_space[key] = RedisStringObject(value)
+        client.db.key_space[key] = RedisStringObject(value)
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return orig_value
 
 
 @server.command('decr', nargs=1)
-def decr_handler(argv):
+def decr_handler(client, argv):
     '''
     Decrements the number stored at key by one. If the key does not exist, it is set to 0 before
     performing the operation. An error is returned if the key contains a value of the wrong type
@@ -588,26 +596,29 @@ def decr_handler(argv):
     '''
     key = argv[1]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        value = obj.get_integer()
+    except KeyError:
         value = 0
-        obj = RedisStringObject()
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        try:
-            obj = key_space[key]
-            value = obj.get_integer()
-        except ValueError:
-            abort(message='value is not an integer or out of range')
+        obj = RedisStringObject(value)
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    try:
+        value = obj.get_integer()
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
     value -= 1
 
     obj.value = value
-    key_space[key] = obj
+    # client.db.key_space[key] = obj
     return value
 
 
 @server.command('decrby', nargs=2)
-def decrby_handler(argv):
+def decrby_handler(client, argv):
     '''
     Decrements the number stored at key by decrement. If the key does not exist, it is set to 0
     before performing the operation. An error is returned if the key contains a value of the wrong
@@ -631,26 +642,29 @@ def decrby_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        value = obj.get_integer()
+    except KeyError:
         value = 0
-        obj = RedisStringObject()
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        try:
-            obj = key_space[key]
-            value = obj.get_integer()
-        except ValueError:
-            abort(message='value is not an integer or out of range')
+        obj = RedisStringObject(value)
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    try:
+        value = obj.get_integer()
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
     value -= decrement
 
     obj.value = value
-    key_space[key] = obj
+    # client.db.key_space[key] = obj
     return value
 
 
 @server.command('incr', nargs=1)
-def incr_handler(argv):
+def incr_handler(client, argv):
     '''
     Increments the number stored at key by one. If the key does not exist, it is set to 0 before
     performing the operation. An error is returned if the key contains a value of the wrong type or
@@ -672,26 +686,29 @@ def incr_handler(argv):
     '''
     key = argv[1]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        value = obj.get_integer()
+    except KeyError:
         value = 0
-        obj = RedisStringObject()
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        try:
-            obj = key_space[key]
-            value = obj.get_integer()
-        except ValueError:
-            abort(message='value is not an integer or out of range')
+        obj = RedisStringObject(value)
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    try:
+        value = obj.get_integer()
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
     value += 1
 
     obj.value = value
-    key_space[key] = obj
+    client.db.key_space[key] = obj
     return value
 
 
 @server.command('incrby', nargs=2)
-def incrby_handler(argv):
+def incrby_handler(client, argv):
     '''
     Increments the number stored at key by increment. If the key does not exist, it is set to 0 before
     performing the operation. An error is returned if the key contains a value of the wrong type or
@@ -714,26 +731,29 @@ def incrby_handler(argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        value = obj.get_integer()
+    except KeyError:
         value = 0
-        obj = RedisStringObject(0)
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        try:
-            obj = key_space[key]
-            value = obj.get_integer()
-        except ValueError:
-            abort(message='value is not an integer or out of range')
+        obj = RedisStringObject(value)
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    try:
+        value = obj.get_integer()
+    except ValueError:
+        abort(message='value is not an integer or out of range')
+
     value += increment
 
     obj.value = value
-    key_space[key] = obj
+    client.db.key_space[key] = obj
     return value
 
 
 @server.command('incrbyfloat', nargs=2)
-def incrbyfloat_handler(argv):
+def incrbyfloat_handler(client, argv):
     '''
     Increment the string representing a floating point number stored at key by the specified increment.
     If the key does not exist, it is set to 0 before performing the operation. An error is returned if
@@ -769,26 +789,29 @@ def incrbyfloat_handler(argv):
     except InvalidOperation:
         abort(message='value is not a valid float')
 
-    if key not in key_space:
-        value = Decimal('0')
-        obj = RedisStringObject(value)
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
-        try:
-            obj = key_space[key]
-            value = obj.get_decimal()
-        except InvalidOperation:
-            abort(message='value is not a valid float')
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+        value = obj.get_integer()
+    except KeyError:
+        value = 0
+        obj = RedisStringObject()
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+
+    try:
+        value = obj.get_decimal()
+    except InvalidOperation:
+        abort(message='value is not a valid float')
+
     value += increment
 
     obj.value = value
-    key_space[key] = obj
+    client.db.key_space[key] = obj
     return str(value).encode()
 
 
 @server.command('strlen', nargs=1)
-def strlen_handler(argv):
+def strlen_handler(client, argv):
     '''
     Returns the length of the string value stored at key. An error is returned when key holds a non-string value.
 
@@ -802,17 +825,18 @@ def strlen_handler(argv):
 
     key = argv[1]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+    except KeyError:
         return 0
-
-    if not isinstance(key_space[key], RedisStringObject):
+    except ValueError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-    return len(key_space[key].get_bytes())
+    return len(obj.get_bytes())
 
 
 @server.command('append', nargs=2)
-def append_handler(argv):
+def append_handler(client, argv):
     '''
     If key already exists and is a string, this command appends the value at the end of the string.
     If key does not exist it is created and set as an empty string, so APPEND will be similar to SET
@@ -828,20 +852,107 @@ def append_handler(argv):
 
     key, value = argv[1], argv[2]
 
-    if key not in key_space:
+    try:
+        obj = get_object(client.db, key, type=RedisStringObject)
+    except KeyError:
         length = len(value)
         try:
             value = int(value)
         except ValueError:
             pass
-        key_space[key] = RedisStringObject(value)
-
+        client.db.key_space[key] = RedisStringObject(value)
         return length
-    else:
-        if not isinstance(key_space[key], RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+    except ValueError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
-        obj = key_space[key]
-        obj.value = obj.get_bytes() + value
+    obj.value = obj.get_bytes() + value
 
-        return len(obj.value)
+    return len(obj.value)
+
+
+@server.command('mset', nargs=nargs_greater_equal(2))
+def mset_handler(client, argv):
+    '''
+    Sets the given keys to their respective values. MSET replaces existing values with new values,
+    just as regular SET. See MSETNX if you don't want to overwrite existing values.
+
+    MSET is atomic, so all given keys are set at once. It is not possible for clients to see that
+    some of the keys were updated while others are unchanged.
+
+    .. code::
+        MSET key value [key value ...]
+
+    '''
+
+    if len(argv) & 1 == 0:
+        abort(message='wrong number of arguments for MSET')
+
+    for key, value in group_iter(argv[1:], n=2):
+        client.db.key_space[key] = RedisStringObject(value=value)
+
+    return True
+
+
+@server.command('msetnx', nargs=nargs_greater_equal(2))
+def msetnx_handler(client, argv):
+    '''
+    Sets the given keys to their respective values. MSETNX will not perform any operation at all even
+    if just a single key already exists.
+
+    Because of this semantic MSETNX can be used in order to set different keys representing different
+    fields of an unique logic object in a way that ensures that either all the fields or none at all
+    are set.
+
+    MSETNX is atomic, so all given keys are set at once. It is not possible for clients to see that some
+    of the keys were updated while others are unchanged.
+
+    .. code::
+        MSETNX key value [key value ...]
+
+    :return: 1 if the all the keys were set. 0 if no key was set (at least one key already existed).
+    :rtype: int
+
+    '''
+
+    if len(argv) & 1 == 0:
+        abort(message='wrong number of arguments for MSET')
+
+    all_set = True
+    for key, value in group_iter(argv[1:], n=2):
+        try:
+            get_object(client.db, key)
+            all_set = False
+            break
+        except KeyError:
+            pass
+
+    if all_set:
+        for key, value in group_iter(argv[1:], n=2):
+            client.db.key_space[key] = RedisStringObject(value=value)
+
+    return int(all_set)
+
+
+@server.command('mget', nargs=nargs_greater_equal(1))
+def mget_handler(client, argv):
+    '''
+    Returns the values of all specified keys. For every key that does not hold a string value or does
+    not exist, the special value nil is returned. Because of this, the operation never fails.
+
+    .. code::
+        MGET key [key ...]
+
+    :return: list of values at the specified keys.
+    :rtype: list
+
+    '''
+
+    result = []
+    for key in argv[1:]:
+        try:
+            obj = get_object(client.db, key, RedisStringObject)
+            result.append(obj.value)
+        except (ValueError, KeyError):
+            result.append(None)
+
+    return result

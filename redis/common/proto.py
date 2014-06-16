@@ -129,5 +129,29 @@ class InlineProtocolParser(RedisProtocolParser):
 
     @asyncio.coroutine
     def get_argvalue(self, beginline, stream_reader):
-        line = beginline.rstrip(b'\r\n').rstrip(b' ')
-        return line.split(b' ')
+        line = beginline.rstrip(b'\r\n').rstrip(b' ').decode('unicode_escape')
+        quote_ = None
+        argv = []
+        tmp = []
+        for c in line:
+            if (c == ' ' or c == '\t') and quote_ is None:
+                if len(tmp) != 0:
+                    argv.append(''.join(tmp).encode())
+                    tmp = []
+            elif c == '"' or c == "'":
+                if quote_ is not None and quote_ == c:
+                    quote_ = None
+                    argv.append(''.join(tmp).encode())
+                    tmp = []
+                elif quote_ is None:
+                    quote_ = c
+                else:
+                    tmp.append(c)
+            else:
+                tmp.append(c)
+        if len(tmp) != 0:
+            argv.append(''.join(tmp).encode())
+
+        if quote_ is not None:
+            raise ProtocolError('unbalanced quotes in request')
+        return argv
