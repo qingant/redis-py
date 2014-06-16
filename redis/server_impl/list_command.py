@@ -33,7 +33,7 @@ def lindex_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return None
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -70,7 +70,7 @@ def lpush_handler(client, argv):
     except KeyError:
         obj = RedisListObject()
         client.db.key_space[key] = obj
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     # for value in values:
@@ -99,7 +99,7 @@ def lpushx_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return 0
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     obj.push(value)
@@ -135,7 +135,7 @@ def lrange_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return []
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if start < 0:
@@ -180,7 +180,7 @@ def lrem_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return 0
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if count < 0:
@@ -227,7 +227,7 @@ def llen_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return 0
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return len(obj)
@@ -251,7 +251,7 @@ def lpop_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return 0
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -284,7 +284,7 @@ def lset_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         abort(message='index out of range')
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if index < 0:
@@ -331,7 +331,7 @@ def ltrim_handler(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return True
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     if start < 0:
@@ -374,7 +374,7 @@ def linsert(client, argv):
         obj = get_object(client.db, key, RedisListObject)
     except KeyError:
         return None
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:

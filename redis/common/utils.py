@@ -53,7 +53,7 @@ def get_object(db, key, type=RedisObject):
             del db.key_space[key]
             raise KeyError('%s not exists' % key)
         if not isinstance(obj, type):
-            raise ValueError('%s is not a %s' % (obj, type))
+            raise TypeError('%s is not a %s' % (obj, type))
         return obj
     except KeyError:
         raise

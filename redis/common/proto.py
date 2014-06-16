@@ -388,28 +388,51 @@ class InlineProtocolParser(RedisProtocolParser):
 
     @classmethod
     def parse_line(self, raw_line):
-        line = raw_line.rstrip(b'\r\n').rstrip(b' ').decode('unicode_escape')
+        line = raw_line.rstrip(b'\r\n').rstrip(b' ')
         quote_ = None
+        escaped = False
+        hex_char = False
+        hex_value = ''
         argv = []
         tmp = []
         for c in line:
-            if (c == ' ' or c == '\t') and quote_ is None:
+            if escaped:
+                if c == b'x'[0]:
+                    hex_char = True
+                else:
+                    tmp.append(c)
+                escaped = False
+                continue
+            elif hex_char:
+                hex_value += bytes([c]).decode()
+                if len(hex_value) == 2:
+                    hex_char = False
+                    try:
+                        tmp.append(int(hex_value, 16))
+                    except ValueError:
+                        tmp += [b'x'[0]] + [val for val in hex_value.encode()]
+                    hex_value = ''
+                continue
+
+            if (c == b' '[0] or c == b'\t'[0]) and quote_ is None:
                 if len(tmp) != 0:
-                    argv.append(''.join(tmp).encode())
+                    argv.append(bytes(tmp))
                     tmp = []
-            elif c == '"' or c == "'":
+            elif c == b'"'[0] or c == b"'"[0]:
                 if quote_ is not None and quote_ == c:
                     quote_ = None
-                    argv.append(''.join(tmp).encode())
+                    argv.append(bytes(tmp))
                     tmp = []
                 elif quote_ is None:
                     quote_ = c
                 else:
                     tmp.append(c)
+            elif c == b'\\'[0]:
+                escaped = True
             else:
                 tmp.append(c)
         if len(tmp) != 0:
-            argv.append(''.join(tmp).encode())
+            argv.append(bytes(tmp))
 
         if quote_ is not None:
             raise ProtocolError('unbalanced quotes in request')

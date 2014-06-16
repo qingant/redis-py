@@ -85,6 +85,7 @@ def bitop_handler(client, argv):
     '''
 
     operation, destkey, keys = argv[1].upper(), argv[2], argv[3:]
+    print(operation, destkey, keys)
     if operation not in (b'AND', b'OR', b'XOR', b'NOT'):
         abort(message='Don\'t know what to do for "bitop"')
 
@@ -96,7 +97,7 @@ def bitop_handler(client, argv):
             obj = get_object(client.db, keys[0], RedisStringObject)
         except KeyError:
             return 0
-        except ValueError:
+        except TypeError:
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
         ba = bitarray.bitarray()
@@ -118,7 +119,7 @@ def bitop_handler(client, argv):
         dest_ba.frombytes(obj.get_bytes())
     except KeyError:
         pass
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     for key in keys[1:]:
@@ -128,12 +129,12 @@ def bitop_handler(client, argv):
             src_ba.frombytes(obj.get_bytes())
 
             if len(src_ba) > len(dest_ba):
-                dest_ba.extend([0] * (len(src_ba) - len(dest_ba)))
+                dest_ba = bitarray.bitarray('0' * (len(src_ba) - len(dest_ba))) + dest_ba
             elif len(dest_ba) > len(src_ba):
-                src_ba.extend([0] * (len(dest_ba) - len(src_ba)))
+                src_ba = bitarray.bitarray('0' * (len(dest_ba) - len(src_ba))) + src_ba
         except KeyError:
             src_ba = bitarray.bitarray('0' * len(dest_ba))
-        except ValueError:
+        except TypeError:
             abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
         dest_ba = oper_func(dest_ba, src_ba)
@@ -230,7 +231,7 @@ def bitpos_handler(client, argv):
         ba.frombytes(obj.get_bytes()[start:end])
     except KeyError:
         ba = bitarray.bitarray(b'0')
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     pos = ba.search(bitarray.bitarray(str(bit)), 1)
@@ -341,7 +342,7 @@ def setbit_handler(client, argv):
     try:
         obj = get_object(client.db, key, RedisStringObject)
         ba.frombytes(obj.get_bytes())
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
     except KeyError:
         pass
@@ -423,12 +424,12 @@ def setrange_handler(client, argv):
     except ValueError:
         abort(message='value is not an integer or out of range')
 
-    if key not in client.db.key_space:
+    try:
+        obj = get_object(client.db, key, RedisStringObject)
+    except TypeError:
+        abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
+    except KeyError:
         obj = RedisStringObject()
-    else:
-        obj = client.db.key_space[key]
-        if not isinstance(obj, RedisStringObject):
-            abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     stor_value = obj.get_bytes()
     if len(stor_value) < offset:
@@ -458,7 +459,7 @@ def get_handler(client, argv):
         return obj
     except KeyError:
         return None
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
 
@@ -490,7 +491,7 @@ def getbit_handler(client, argv):
         return int(ba[offset])
     except KeyError:
         return None
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
     except IndexError:
         return 0
@@ -524,7 +525,7 @@ def getrange_handler(client, argv):
 
     except KeyError:
         return b''
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     length = len(obj)
@@ -561,7 +562,7 @@ def getset_handler(client, argv):
     except KeyError:
         orig_value = None
         client.db.key_space[key] = RedisStringObject(value)
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return RedisStringObject(orig_value)
@@ -592,7 +593,7 @@ def decr_handler(client, argv):
     except KeyError:
         value = 0
         obj = RedisStringObject(value)
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -638,7 +639,7 @@ def decrby_handler(client, argv):
     except KeyError:
         value = 0
         obj = RedisStringObject(value)
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -682,7 +683,7 @@ def incr_handler(client, argv):
     except KeyError:
         value = 0
         obj = RedisStringObject(value)
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -727,7 +728,7 @@ def incrby_handler(client, argv):
     except KeyError:
         value = 0
         obj = RedisStringObject(value)
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -785,7 +786,7 @@ def incrbyfloat_handler(client, argv):
     except KeyError:
         value = 0
         obj = RedisStringObject()
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     try:
@@ -819,7 +820,7 @@ def strlen_handler(client, argv):
         obj = get_object(client.db, key, type=RedisStringObject)
     except KeyError:
         return 0
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     return len(obj.get_bytes())
@@ -852,7 +853,7 @@ def append_handler(client, argv):
             pass
         client.db.key_space[key] = RedisStringObject(value)
         return length
-    except ValueError:
+    except TypeError:
         abort(errtype='WRONGTYPE', message='Operation against a key holding the wrong kind of value')
 
     obj.value = obj.get_bytes() + value
@@ -942,7 +943,7 @@ def mget_handler(client, argv):
         try:
             obj = get_object(client.db, key, RedisStringObject)
             result.append(obj)
-        except (ValueError, KeyError):
+        except (TypeError, KeyError):
             result.append(None)
 
     return result

@@ -232,9 +232,11 @@ class RedisTestClient(RedisClientBase):
 class RedisClient(RedisClientBase):
 
     def __init__(self, server, stream_reader, stream_writer):
-        super(RedisClientBase, self).__init__(server)
+        super(RedisClient, self).__init__(server)
         self.stream_reader = stream_reader
         self.stream_writer = stream_writer
+
+        self.proto = RedisProtocol(self.stream_reader)
 
     def get_info_str(self):
         return 'addr={addr} fd= name={name} age={age} idle={idle} flags= db={db} sub= psub= multi= qbuf= ' \
@@ -267,7 +269,6 @@ class RedisClient(RedisClientBase):
                 argv = yield from self.proto.get_command()
             except ProtocolError as e:
                 self.write_object(RedisErrorStringSerializationObject(errtype='ERR', message='Protocol error: %s' % e))
-                self.close()
                 break
             else:
                 cur_time = time.time()
@@ -281,7 +282,6 @@ class RedisClient(RedisClientBase):
 
             if argv[0].upper() == b'QUIT':
                 self.write_object(RedisSimpleStringSerializationObject('OK'))
-                self.close()
                 break
 
             if self.stat == RedisClientBase.STAT_MULTI \
@@ -294,10 +294,11 @@ class RedisClient(RedisClientBase):
             self.write_object(ret)
             self.last_cmd = argv[0].decode()
 
+        self.close()
         logger.info('client {} exiting'.format(self.ipaddr))
 
     def close(self):
-        yield from self.stream_writer.drain()
+        self.stream_writer.write_eof()
         self.stream_writer.close()
 
     def write_object(self, obj):
