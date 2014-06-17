@@ -1,4 +1,4 @@
-
+import time
 from redis.server_impl import server
 
 c = server.get_test_client()
@@ -10,8 +10,17 @@ def test_set():
 
     assert c.execute(b'*3\r\n$3\r\nSET\r\n$4\r\nkey1\r\n$2\r\n\x80\x80\r\n') == b'+OK\r\n'
 
+    assert c.execute(b'SET willexp hello EX 1\r\n') == b'+OK\r\n'
+    time.sleep(1)
+    assert c.execute(b'GET willexp\r\n') == b'$-1\r\n'
+
+    assert c.execute(b'SET hello world NX\r\n') == b'$-1\r\n'
+    assert c.execute(b'SET hello fuck XX\r\n') == b'+OK\r\n'
+    assert c.execute(b'GET hello\r\n') == b'$4\r\nfuck\r\n'
+
 
 def test_get():
+    assert c.execute(b'SET hello world\r\n') == b'+OK\r\n'
     assert c.execute(b'GET hello\r\n') == b'$5\r\nworld\r\n'
     assert c.execute(b'GET key\r\n') == b'$1\r\n\x80\r\n'
 

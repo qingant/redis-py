@@ -297,10 +297,10 @@ def set_handler(client, argv):
 
     try:
         get_object(client.db, key)
-        if xx:
+        if nx:
             return None
     except KeyError:
-        if nx:
+        if xx:
             return None
 
     try:
