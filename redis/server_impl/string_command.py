@@ -192,7 +192,7 @@ def bitpos_handler(client, argv):
 
     key, bit = argv[1], argv[2]
     try:
-        bit = int(bit)
+        bit = int(bit.decode())
         if bit not in (0, 1):
             abort(message='The bit argument must be 1 or 0.')
     except ValueError:

@@ -193,6 +193,9 @@ class RedisListSerializationObject(RedisSerializationObject):
             else:
                 self._value.append(val)
 
+    def __iter__(self):
+        return self._value.__iter__()
+
     def to_resp(self):
         '''
         Format::
