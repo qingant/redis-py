@@ -10,7 +10,9 @@ def test_set():
 
     assert c.execute(b'*3\r\n$3\r\nSET\r\n$4\r\nkey1\r\n$2\r\n\x80\x80\r\n') == b'+OK\r\n'
 
-    assert c.execute(b'SET willexp hello EX 1\r\n') == b'+OK\r\n'
+    assert c.execute(b'SET willexp hello EX 1 NX 1000\r\n') == b'+OK\r\n'
+    time.sleep(1)
+    assert c.execute(b'GET willexp\r\n') == b'$5\r\nhello\r\n'
     time.sleep(1)
     assert c.execute(b'GET willexp\r\n') == b'$-1\r\n'
 
