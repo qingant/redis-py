@@ -393,9 +393,11 @@ def setnx_handler(client, argv):
     '''
 
     key, value = argv[1], argv[2]
-    if key in client.db.key_space:
+    try:
+        get_object(client.db, key)
         return 0
-    client.db.key_space[key] = RedisStringObject(value)
+    except KeyError:
+        client.db.key_space[key] = RedisStringObject(value)
     return 1
 
 

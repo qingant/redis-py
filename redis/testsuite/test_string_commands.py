@@ -67,3 +67,18 @@ def test_setbit():
     assert c.execute(b'SET key "\\x80"\r\n') == b'+OK\r\n'
     assert c.execute(b'SETBIT key 0 0\r\n') == b'+OK\r\n'
     assert c.execute(b'GET key\r\n') == b'$1\r\n\x00\r\n'
+
+
+def test_setex():
+    assert c.execute(b'SETEX key 1 val\r\n') == b'+OK\r\n'
+    assert c.execute(b'GET key\r\n') == b'$3\r\nval\r\n'
+    time.sleep(1)
+    assert c.execute(b'GET key\r\n') == b'$-1\r\n'
+
+
+def test_setnx():
+    assert c.execute(b'SET key hello EX 1\r\n') == b'+OK\r\n'
+    assert c.execute(b'SETNX key val\r\n') == b':0\r\n'
+    time.sleep(1)
+    assert c.execute(b'SETNX key val\r\n') == b':1\r\n'
+    assert c.execute(b'GET key\r\n') == b'$3\r\nval\r\n'
